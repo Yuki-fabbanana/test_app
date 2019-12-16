@@ -1,0 +1,182 @@
+<!-- rec button -->
+<div class="loader" id="animation" style="display: none;">
+  <div class="dot"></div>
+  <div class="dot"></div>
+  <div class="dot"></div>
+</div>
+
+<div class="rec" id="stay" onClick="startRec();">
+  <div class="stay_dot"></div>
+  <div class="stay_dot"></div>
+  <div class="stay_dot"></div>
+</div>
+
+<script>
+let audio_sample_rate = null;
+let scriptProcessor = null;
+let audioContext = null;
+
+// audio data
+let audioData = [];
+let bufferSize = 1024;
+
+let url = "";
+
+///////////////////////////////////////
+
+let saveAudio = function () {
+
+  var blob = exportWAV(audioData);
+
+  var fd = new FormData(); //fdはFormDataの略
+  fd.append('file', blob, (new Date()).getTime() + ".wav");// FormData オブジェクト内の既存のキーに新たな値を追加するか、キーが存在しない場合はキーを追加します。
+  $(document)
+    .ajaxStop(function() {
+      $('#animation').hide();
+      $('#stay').show();
+    });
+  if(location.href.indexOf("proust.tokyo") > -1) {
+    url = "https://proust.tokyo/prousts/convert"
+  } else {
+    url = "http://localhost:3000/prousts/convert"
+  }
+
+  $.ajax({
+    url:url,
+    type:'POST',
+    data:fd,
+    contentType: false,
+    processData: false,
+  })
+
+  // Ajaxリクエストが成功した時発動
+  .done( (data) => {
+
+    console.log(data);
+    getCurrentPosition(data);
+    // alert("データの取得に成功しました。");
+  })
+  // Ajaxリクエストが失敗した時発動
+  .fail( (data) => {
+      alert("データの取得に失敗しました。");
+  })
+  // Ajaxリクエストが成功・失敗どちらでも発動
+  .always( (data) => {
+    audioData = [];
+  });
+
+}
+
+//////////////////////////////////////////////////
+
+let exportWAV = function (audioData) {
+
+  let encodeWAV = function (samples, sampleRate) {
+    let buffer = new ArrayBuffer(44 + samples.length * 2);// 物理メモリの領域（バッファ）を確保するためのクラス 操作をするためにDataViewを使用
+    let view = new DataView(buffer); //バッファの内容物を読み書きするために使用する
+
+    let writeString = function (view, offset, string) {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i));
+      }
+    };
+
+    let floatTo16BitPCM = function (output, offset, input) {
+      for (let i = 0; i < input.length; i++ , offset += 2) {
+        let s = Math.max(-1, Math.min(1, input[i]));
+        output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      }
+    };
+
+    writeString(view, 0, 'RIFF');  // RIFFヘッダ
+    view.setUint32(4, 32 + samples.length * 2, true); // これ以降のファイルサイズ
+    writeString(view, 8, 'WAVE'); // WAVEヘッダ
+    writeString(view, 12, 'fmt '); // fmtチャンク
+    view.setUint32(16, 16, true); // fmtチャンクのバイト数
+    view.setUint16(20, 1, true); // フォーマットID
+    view.setUint16(22, 1, true); // チャンネル数
+    view.setUint32(24, sampleRate, true); // サンプリングレート
+    view.setUint32(28, sampleRate * 2, true); // データ速度
+    view.setUint16(32, 2, true); // ブロックサイズ
+    view.setUint16(34, 16, true); // サンプルあたりのビット数
+    writeString(view, 36, 'data'); // dataチャンク
+    view.setUint32(40, samples.length * 2, true); // 波形データのバイト数
+    floatTo16BitPCM(view, 44, samples); // 波形データ
+
+    return view;
+  };
+
+  let mergeBuffers = function (audioData) {
+    let sampleLength = 0;
+    for (let i = 0; i < audioData.length; i++) {
+      sampleLength += audioData[i].length;
+    }
+    let samples = new Float32Array(sampleLength);
+    let sampleIdx = 0;
+    for (let i = 0; i < audioData.length; i++) {
+      for (let j = 0; j < audioData[i].length; j++) {
+        samples[sampleIdx] = audioData[i][j];
+        sampleIdx++;
+      }
+    }
+    return samples;
+  };
+
+  let dataview = encodeWAV(mergeBuffers(audioData), audio_sample_rate);
+  let audioBlob = new Blob([dataview], { type: 'audio/wav' });
+
+  return audioBlob;
+};
+
+///////////////////////////////////////////////////
+
+// save audio data
+var onAudioProcess = function (e) {
+  var input = e.inputBuffer.getChannelData(0);// getChannelData()メソッドは、引数channel(0が最初のチャンネル)に結び付けられたPCMデータをFloat32Arrayで返す
+  var bufferData = new Float32Array(bufferSize);//bufferDataに空のbufferを入れる(一時的にデータを溜めておく記憶場所)
+  for (var i = 0; i < bufferSize; i++) {// inputに入ってくるpcmデータをbufferDataに入れていく
+    bufferData[i] = input[i];
+  }
+
+  audioData.push(bufferData); // audioData(array)にbefferDataを追加していく
+};
+
+//おそらくinputBuffer.getChannelData(0);でpcmのデータを取得し続けそれをfor文でbufferDataに入れて行ってる
+
+//AudioBufferはチャンネル数分のリニアPCMをFloat32Arrayとして持っていると捉えれば良いでしょう。
+//getChannelDataで指定したチャンネルのFloat32Arrayを取り出して、楽曲と連動したオーディオビジュアライザに利用したり波形を編集してエフェクトをかけたりと好きにできます。
+
+///////////////////////////////////////////////////
+
+///録音実際の処理///
+// getusermedia
+let handleSuccess = function (stream) {
+  audioContext = new(window.AudioContext || window.webkitAudioContext); // クロスブラウザ対応のため
+  audio_sample_rate = audioContext.sampleRate; //44100
+  scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1); // ダイレクトな音声処理ができる ScriptProcessorNode オブジェクトを作成できる
+  var mediastreamsource = audioContext.createMediaStreamSource(stream); //navigator.getUserMediaインスタンスからMediaStreamAudioSourceNodeオブジェクトを生成します MediaStreamAudioSourceNodeはWebRTC でも使われる MediaStream を信号源にします。例えばマイクから入ってくる信号を扱うような場合に使用します。
+  mediastreamsource.connect(scriptProcessor); // おそらくscriptPeocessorの入力にマイクの出力をつなげて次々に情報を入れていく？
+  scriptProcessor.onaudioprocess = onAudioProcess;
+  scriptProcessor.connect(audioContext.destination);
+
+  setTimeout(function () {
+    mediastreamsource.disconnect(scriptProcessor); //5秒たったら出力を外す
+    scriptProcessor.disconnect(audioContext.destination); //5秒たったら出力を外す
+    saveAudio(); //saveAudioファンクションが走る
+  }, 5000);
+};
+
+// recボタンをクリックすると以下のfunctionが走る
+function startRec(){
+  // マイクの使用許可
+  navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(handleSuccess);
+
+  //こちらはrecボタンの動作制御
+  var stay_dot = document.getElementById("stay");//id=stayのdisplayプロパティをnoneにする
+  stay_dot.style.display = "none";
+  var animation_dot = document.getElementById("animation");//id=animation_dotのdisplayプロパティをblockにする
+  animation_dot.style.display = "block";
+}
+
+
+</script>
